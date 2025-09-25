@@ -1,13 +1,13 @@
 # BTC-Price-Prediction-ML-Project
 
 ## About
-This project focuses on the prediction of the prices of Bitcoin, the most in-demand crypto-currency of today’s world. We predict the prices accurately by gathering data available at [binanace](https://web-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical?convert=USD&slug=bitcoin&time_end=1601510400&time_start=1367107200) while taking various hyper-parameters into consideration which have affected the bitcoin prices until now. 
+This project focuses on the prediction of the prices of Bitcoin, the most in-demand cryptocurrency of today’s world. We predict the prices accurately by gathering data available at **[Binance](https://data.binance.com/)** while taking various hyper-parameters into consideration which have affected the Bitcoin prices until now. 
 
 ## Paper presentation
-The [paper](9.pdf) contains all details of algorithms used along with results, anaylisis and discussions om the topic.
+The [paper](9.pdf) contains all details of algorithms used along with results, analysis and discussions on the topic.
 
 ### Dataset
-* [Dataset](https://web-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical?convert=USD&slug=bitcoin&time_end=1601510400&time_start=1367107200) has been downloaded using coinmarketcap API.
+* Dataset has been downloaded using the **Binance API**.
 
 * Dataset after Preprocessing
 
@@ -68,6 +68,3 @@ OR
 * elasticnet.py runs Linear Regression with a combination of L1 and L2 penalty.
 * bayesian.py runs BayesianRidge regression with optimal parameters.
 * polyreg.py runs Linear Regression by adding polynomial features.
-
-
-
