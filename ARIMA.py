@@ -6,109 +6,96 @@ register_matplotlib_converters()
 import warnings
 warnings.filterwarnings("ignore")
 
+url = "https://api.binance.com/api/v3/klines"
+param = {
+    "symbol": "BTCUSDT",
+    "interval": "1d",
+    "startTime": 1367107200000,
+    "endTime": 1601510400000
+}
+response = requests.get(url, params=param)
+data = response.json()
 
+df = pd.DataFrame(data, columns=['Open time', 'Open', 'High', 'Low', 'Close', 'Volume',
+                                 'Close time', 'Quote asset volume', 'Number of trades',
+                                 'Taker buy base asset volume', 'Taker buy quote asset volume', 'Ignore'])
 
-# Fetching data from the server
-url = "https://web-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
-param = {"convert":"USD","slug":"bitcoin","time_end":"1601510400","time_start":"1367107200"}
-content = requests.get(url=url, params=param).json()
-df = pd.json_normalize(content['data']['quotes'])
+df['Date'] = pd.to_datetime(df['Open time'], unit='ms')
+df['Low'] = pd.to_numeric(df['Low'])
+df['High'] = pd.to_numeric(df['High'])
+df['Open'] = pd.to_numeric(df['Open'])
+df['Close'] = pd.to_numeric(df['Close'])
+df['Volume'] = pd.to_numeric(df['Volume'])
+df['Mean'] = (df['Low'] + df['High']) / 2
 
-# Extracting and renaming the important variables
-df['Date']=pd.to_datetime(df['quote.USD.timestamp']).dt.tz_localize(None)
-df['Low'] = df['quote.USD.low']
-df['High'] = df['quote.USD.high']
-df['Open'] = df['quote.USD.open']
-df['Close'] = df['quote.USD.close']
-df['Volume'] = df['quote.USD.volume']
+df = df[['Date', 'Low', 'High', 'Open', 'Close', 'Volume', 'Mean']].dropna()
 
-# Drop original and redundant columns
-df=df.drop(columns=['time_open','time_close','time_high','time_low', 'quote.USD.low', 'quote.USD.high', 'quote.USD.open', 'quote.USD.close', 'quote.USD.volume', 'quote.USD.market_cap', 'quote.USD.timestamp'])
-
-# Creating a new feature for better representing day-wise values
-df['Mean'] = (df['Low'] + df['High'])/2
-
-# Cleaning the data for any NaN or Null fields
-df = df.dropna()
-
-
-
-# Creating a copy for making small changes
 dataset_for_prediction = df.copy()
-dataset_for_prediction['Actual']=dataset_for_prediction['Mean'].shift()
-dataset_for_prediction=dataset_for_prediction.dropna()
+dataset_for_prediction['Actual'] = dataset_for_prediction['Mean'].shift()
+dataset_for_prediction = dataset_for_prediction.dropna()
+dataset_for_prediction['Date'] = pd.to_datetime(dataset_for_prediction['Date'])
+dataset_for_prediction.index = dataset_for_prediction['Date']
 
-# date time typecast
-dataset_for_prediction['Date'] =pd.to_datetime(dataset_for_prediction['Date'])
-dataset_for_prediction.index= dataset_for_prediction['Date']
-
-
-
-# normalizing the exogeneous variables
 from sklearn.preprocessing import MinMaxScaler
 sc_in = MinMaxScaler(feature_range=(0, 1))
 scaled_input = sc_in.fit_transform(dataset_for_prediction[['Low', 'High', 'Open', 'Close', 'Volume', 'Mean']])
 scaled_input = pd.DataFrame(scaled_input, index=dataset_for_prediction.index)
-X=scaled_input
+X = scaled_input
 X.rename(columns={0:'Low', 1:'High', 2:'Open', 3:'Close', 4:'Volume', 5:'Mean'}, inplace=True)
-print("Normalized X")
-print(X.head())
 
-
-# normalizing the time series
 sc_out = MinMaxScaler(feature_range=(0, 1))
-scaler_output = sc_out.fit_transform(dataset_for_prediction[['Actual']])
-scaler_output =pd.DataFrame(scaler_output, index=dataset_for_prediction.index)
-y=scaler_output
-y.rename(columns={0:'BTC Price next day'}, inplace= True)
-y.index=dataset_for_prediction.index
-print("Normalized y")
-print(y.head())
+scaled_output = sc_out.fit_transform(dataset_for_prediction[['Actual']])
+scaled_output = pd.DataFrame(scaled_output, index=dataset_for_prediction.index)
+y = scaled_output
+y.rename(columns={0:'BTC Price next day'}, inplace=True)
+y.index = dataset_for_prediction.index
 
-
-# train-test split (cannot shuffle in case of time series)
-train_size=int(len(df) *0.9)
-test_size = int(len(df)) - train_size
+train_size = int(len(df) * 0.9)
+test_size = len(df) - train_size
 train_X, train_y = X[:train_size].dropna(), y[:train_size].dropna()
 test_X, test_y = X[train_size:].dropna(), y[train_size:].dropna()
 
+from statsmodels.tsa.arima.model import ARIMA
 
-
-# Init the best SARIMAX model
-from statsmodels.tsa.arima_model import ARIMA
-model= ARIMA(
-    train_y,
-    exog=train_X,
-    order=(0,1,1)
-)
-
-# training the model
+model = ARIMA(train_y, exog=train_X, order=(0, 1, 1))
 results = model.fit()
 
-# get predictions
-predictions = results.predict(start =train_size, end=train_size+test_size-2,exog=test_X)
+# Train/test data split ke baad
+print(f"train_X shape: {train_X.shape}")
+print(f"train_y shape: {train_y.shape}")
+print(f"test_X shape: {test_X.shape}")
+print(f"test_y shape: {test_y.shape}")
 
 
-# setting up for plots
-act = pd.DataFrame(scaler_output.iloc[train_size:, 0])
-predictions=pd.DataFrame(predictions)
-predictions.reset_index(drop=True, inplace=True)
-predictions.index=test_X.index
+
+# Predict
+predictions = results.predict(start=len(train_X), end=len(train_X) + len(test_X) - 1, exog=test_X)
+
+
+print(f"Predictions length: {len(predictions)}")
+print(predictions.head())
+
+if len(predictions) > 0:
+    predictions_df = pd.DataFrame(predictions.values, columns=['Pred'])
+    predictions_df.index = test_X.index
+    predictions = predictions_df
+else:
+    print("No predictions generated!")
+
+
+act = pd.DataFrame(scaled_output.iloc[len(train_X):, 0])
 predictions['Actual'] = act['BTC Price next day']
-predictions.rename(columns={0:'Pred', 'predicted_mean':'Pred'}, inplace=True)
 
-
-# post-processing inverting normalization
 testPredict = sc_out.inverse_transform(predictions[['Pred']])
 testActual = sc_out.inverse_transform(predictions[['Actual']])
 
-# prediction plots
+
 plt.figure(figsize=(20,10))
-plt.plot(predictions.index, testActual, label='Pred', color='blue')
-plt.plot(predictions.index, testPredict, label='Actual', color='red')
+plt.plot(predictions.index, testActual, label='Actual', color='blue')
+plt.plot(predictions.index, testPredict, label='Predicted', color='red')
 plt.legend()
 plt.show()
 
-# print RMSE
 from statsmodels.tools.eval_measures import rmse
-print("RMSE:",rmse(testActual, testPredict))
+print("RMSE:", rmse(testActual, testPredict))
+

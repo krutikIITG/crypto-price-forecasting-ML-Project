@@ -1,4 +1,3 @@
-# Commented out IPython magic to ensure Python compatibility.
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,129 +5,127 @@ import seaborn as sns
 from pandas.plotting import register_matplotlib_converters
 import arch
 register_matplotlib_converters()
-# %matplotlib inline
 import warnings
 import requests
 warnings.filterwarnings("ignore")
 
-# import dataset
-url = "https://web-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
-param = {"convert":"USD","slug":"bitcoin","time_end":"1601510400","time_start":"1367107200"}
-content = requests.get(url=url, params=param).json()
-df = pd.json_normalize(content['data']['quotes'])
+print("Starting GARCH-SARIMAX model...")
 
-# selecting useful columns
-df['Date']=pd.to_datetime(df['quote.USD.timestamp']).dt.tz_localize(None)
-df['Low'] = df['quote.USD.low']
-df['High'] = df['quote.USD.high']
-df['Open'] = df['quote.USD.open']
-df['Close'] = df['quote.USD.close']
-df['Volume'] = df['quote.USD.volume']
+url = "https://api.binance.com/api/v3/klines"
+param = {
+    "symbol": "BTCUSDT",
+    "interval": "1d",
+    "startTime": 1367107200000,
+    "endTime": 1601510400000
+}
+response = requests.get(url, params=param)
+data = response.json()
 
-# dropping unused columns
-df=df.drop(columns=['time_open','time_close','time_high','time_low', 'quote.USD.low', 'quote.USD.high', 'quote.USD.open', 'quote.USD.close', 'quote.USD.volume', 'quote.USD.market_cap', 'quote.USD.timestamp'])
+print("Data loaded successfully")
 
-# feature creation for better representation of price on a day
-df['Mean'] = (df['Low'] + df['High'])/2
+df = pd.DataFrame(data, columns=['Open time', 'Open', 'High', 'Low', 'Close', 'Volume',
+                                 'Close time', 'Quote asset volume', 'Number of trades',
+                                 'Taker buy base asset volume', 'Taker buy quote asset volume', 'Ignore'])
 
-# remove NaNs and Nones
-df = df.dropna()
+df['Date'] = pd.to_datetime(df['Open time'], unit='ms')
+df['Low'] = pd.to_numeric(df['Low'])
+df['High'] = pd.to_numeric(df['High'])
+df['Open'] = pd.to_numeric(df['Open'])
+df['Close'] = pd.to_numeric(df['Close'])
+df['Volume'] = pd.to_numeric(df['Volume'])
+df['Mean'] = (df['Low'] + df['High']) / 2
 
-# data preview
-print(df.head())
+df = df[['Date', 'Low', 'High', 'Open', 'Close', 'Volume', 'Mean']].dropna()
 
+train_size = int(len(df) * 0.9)
+test_size = len(df) - train_size
 
-# making copy for making changes
 dataset_for_prediction = df.copy()
-dataset_for_prediction['Actual']=dataset_for_prediction['Mean'].shift()
-dataset_for_prediction=dataset_for_prediction.dropna()
-dataset_for_prediction['Date'] =pd.to_datetime(dataset_for_prediction['Date'])
-dataset_for_prediction.index= dataset_for_prediction['Date']
+dataset_for_prediction['Actual'] = dataset_for_prediction['Mean'].shift()
+dataset_for_prediction = dataset_for_prediction.dropna()
+dataset_for_prediction['Date'] = pd.to_datetime(dataset_for_prediction['Date'])
+dataset_for_prediction.index = dataset_for_prediction['Date']
 
-
-# normalizing exogeneous variables
 from sklearn.preprocessing import MinMaxScaler
-sc_in = MinMaxScaler(feature_range=(0, 1))
+sc_in = MinMaxScaler(feature_range=(0,1))
 scaled_input = sc_in.fit_transform(dataset_for_prediction[['Low', 'High', 'Open', 'Close', 'Volume', 'Mean']])
 scaled_input = pd.DataFrame(scaled_input, index=dataset_for_prediction.index)
-X= scaled_input
-X.rename(columns={0:'Low', 1:'High', 2:'Open', 3:'Close', 4:'Volume', 5:'Mean'}, inplace=True)
-print(X.head())
+X = scaled_input
+X.rename(columns={0:'Low',1:'High',2:'Open',3:'Close',4:'Volume',5:'Mean'}, inplace=True)
 
-# normalizing the time series
-sc_out = MinMaxScaler(feature_range=(0, 1))
-scaler_output = sc_out.fit_transform(dataset_for_prediction[['Actual']])
-scaler_output =pd.DataFrame(scaler_output, index=dataset_for_prediction.index)
-y=scaler_output
-y.rename(columns={0:'BTC Price next day'}, inplace= True)
-y.index=dataset_for_prediction.index
-print(y.head())
+sc_out = MinMaxScaler(feature_range=(0,1))
+scaled_output = sc_out.fit_transform(dataset_for_prediction[['Actual']])
+scaled_output = pd.DataFrame(scaled_output, index=dataset_for_prediction.index)
+y = scaled_output
+y.rename(columns={0:'BTC Price next day'}, inplace=True)
+y.index = dataset_for_prediction.index
 
-
-# train-test split
-train_size=int(len(df) *0.9)
-test_size = int(len(df)) - train_size
 train_X, train_y = X[:train_size].dropna(), y[:train_size].dropna()
 test_X, test_y = X[train_size:].dropna(), y[train_size:].dropna()
 
+print(f"Train data shape: {train_X.shape}, Test data shape: {test_X.shape}")
 
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-# Init the model
-predic_garch =[]
-for i in range(test_size):
-  model= SARIMAX(pd.concat([train_y,test_y.iloc[:i+1]]),
-  exog=pd.concat([train_X,test_X.iloc[:i+1]]),
-  order=(0,1,1),
-  seasonal_order =(0, 0, 1, 12),
-  enforce_invertibility=False, enforce_stationarity=False)
-  results= model.fit()
-  garch = arch.arch_model(results.resid, p=1, q=1,vol='GARCH')
-  garch_model = garch.fit(update_freq=1)
-  garch_forecast = garch_model.forecast(start = train_size-1,horizon=1,method='simulation')
-  predicted_et = garch_forecast.mean['h.1'].iloc[-1]
-  predic_garch.append(predicted_et)
-  print(predicted_et)
+print("Model training started...")
 
+predic_garch = []
+for i in range(len(test_X)):
+    try:
+        model = SARIMAX(pd.concat([train_y, test_y.iloc[:i+1]]),
+                        exog=pd.concat([train_X, test_X.iloc[:i+1]]),
+                        order=(0,1,1),
+                        seasonal_order=(0,0,1,12),
+                        enforce_invertibility=False,
+                        enforce_stationarity=False)
+        results = model.fit(disp=False)
+        garch = arch.arch_model(results.resid, p=1, q=1, vol='GARCH')
+        garch_model = garch.fit(update_freq=0, disp='off')
+        garch_forecast = garch_model.forecast(horizon=1)
+        predicted_et = garch_forecast.mean['h.1'].iloc[-1]
+        predic_garch.append(predicted_et)
+    except:
+        predic_garch.append(0)  # Fallback if GARCH fails
 
-model= SARIMAX(train_y,
- exog=train_X,
- order=(0,1,1),
- seasonal_order =(0, 0, 1, 12),
- enforce_invertibility=False, enforce_stationarity=False)
+model = SARIMAX(train_y,
+                exog=train_X,
+                order=(0,1,1),
+                seasonal_order=(0,0,1,12),
+                enforce_invertibility=False,
+                enforce_stationarity=False)
+results = model.fit(disp=False)
 
+print("Generating predictions...")
 
-# training the model
-results= model.fit()
+# Fixed prediction generation
+predictions = results.predict(start=len(train_X), end=len(train_X) + len(test_X) - 1, exog=test_X)
 
-# plotting residuals
-results.resid.plot()
+# Convert to DataFrame properly
+predictions = pd.DataFrame(predictions.values, columns=['Pred'], index=test_X.index)
 
+# Add GARCH component
+for i in range(len(predictions)):
+    if i < len(predic_garch):
+        predictions.iloc[i, 0] += predic_garch[i]
 
-# making preditions
-predictions= results.predict(start =train_size, end=train_size+test_size-2,exog=test_X)
-act= pd.DataFrame(scaler_output.iloc[train_size:, 0])
-predictions=pd.DataFrame(predictions)
-predictions.reset_index(drop=True, inplace=True)
-predictions.index=test_X.index
+# Add actual values
+act = pd.DataFrame(scaled_output.iloc[len(train_X):, 0])
 predictions['Actual'] = act['BTC Price next day']
-predictions.rename(columns={'predicted_mean':'Pred'}, inplace=True)
-print(predictions)
-for i in range(len(predictions)) : 
-  predictions.iloc[i,0]= predictions.iloc[i,0]+predic_garch[i]
 
+print(f"Predictions shape: {predictions.shape}")
 
-
-# plotting the results
-trainPredict = sc_out.inverse_transform(predictions[['Pred']])
-testPredict = sc_out.inverse_transform(predictions[['Actual']])
+# Transform back to original scale
+predicted_prices = sc_out.inverse_transform(predictions[['Pred']])
+actual_prices = sc_out.inverse_transform(predictions[['Actual']])
 
 plt.figure(figsize=(20,10))
-plt.plot(predictions.index, trainPredict, label='Pred', color='blue')
-plt.plot(predictions.index, testPredict, label='Actual', color='red')
+plt.plot(predictions.index, predicted_prices, label='Predicted', color='blue')
+plt.plot(predictions.index, actual_prices, label='Actual', color='red')
 plt.legend()
 plt.show()
 
 from statsmodels.tools.eval_measures import rmse
-error=rmse(trainPredict, testPredict)
-print("RMSE:",error)
+error = rmse(predicted_prices, actual_prices)
+print("RMSE:", error)
+print("GARCH-SARIMAX model completed successfully!")
+klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1DAY, "365 day ago UTC")

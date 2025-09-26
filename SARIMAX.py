@@ -1,117 +1,126 @@
+from binance.client import Client
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-import requests
 from pandas.plotting import register_matplotlib_converters
-register_matplotlib_converters()
 import warnings
+from sklearn.preprocessing import MinMaxScaler
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 warnings.filterwarnings("ignore")
 
+print("Starting SARIMAX model with Binance API...")
 
+# Binance API key aur secret
+api_key = 'ADD_YOUR_BINANCE_API_KEY_HERE'
+api_secret = 'ADD_YOUR_BINANCE_API_SECRET_HERE'
 
-# Fetching data from the server
-url = "https://web-api.coinmarketcap.com/v1/cryptocurrency/ohlcv/historical"
-param = {"convert":"USD","slug":"bitcoin","time_end":"1601510400","time_start":"1367107200"}
-content = requests.get(url=url, params=param).json()
-df = pd.json_normalize(content['data']['quotes'])
+client = Client(api_key, api_secret)
 
-# Extracting and renaming the important variables
-df['Date']=pd.to_datetime(df['quote.USD.timestamp']).dt.tz_localize(None)
-df['Low'] = df['quote.USD.low']
-df['High'] = df['quote.USD.high']
-df['Open'] = df['quote.USD.open']
-df['Close'] = df['quote.USD.close']
-df['Volume'] = df['quote.USD.volume']
+# Cryptocurrency symbol
+symbol = 'BTCUSDT'
 
-# Drop original and redundant columns
-df=df.drop(columns=['time_open','time_close','time_high','time_low', 'quote.USD.low', 'quote.USD.high', 'quote.USD.open', 'quote.USD.close', 'quote.USD.volume', 'quote.USD.market_cap', 'quote.USD.timestamp'])
+print("Fetching data from Binance API...")
+# Historical data fetch karna (1 year data)
+klines = client.get_historical_klines(symbol, Client.KLINE_INTERVAL_1DAY, "365 day ago UTC")
 
-# Creating a new feature for better representing day-wise values
-df['Mean'] = (df['Low'] + df['High'])/2
+print("Data loaded successfully from Binance API")
 
-# Cleaning the data for any NaN or Null fields
-df = df.dropna()
+# Data ko DataFrame me convert karen
+df = pd.DataFrame(klines, columns=[
+    'open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time',
+    'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
+    'taker_buy_quote_asset_volume', 'ignore'
+])
 
+# Convert timestamps to readable date
+df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
 
+# Convert price columns to numeric
+df['low'] = pd.to_numeric(df['low'])
+df['high'] = pd.to_numeric(df['high'])
+df['open'] = pd.to_numeric(df['open'])
+df['close'] = pd.to_numeric(df['close'])
+df['volume'] = pd.to_numeric(df['volume'])
+df['mean'] = (df['low'] + df['high']) / 2
 
-# Creating a copy for making small changes
+# Clean data
+df = df[['open_time', 'low', 'high', 'open', 'close', 'volume', 'mean']].dropna()
+df.rename(columns={'open_time': 'Date'}, inplace=True)
+
+print(f"Data shape: {df.shape}")
+
+train_size = int(len(df) * 0.9)
+
+# Prepare prediction dataset
 dataset_for_prediction = df.copy()
-dataset_for_prediction['Actual']=dataset_for_prediction['Mean'].shift()
-dataset_for_prediction=dataset_for_prediction.dropna()
+dataset_for_prediction['Actual'] = dataset_for_prediction['mean'].shift()
+dataset_for_prediction = dataset_for_prediction.dropna()
+dataset_for_prediction['Date'] = pd.to_datetime(dataset_for_prediction['Date'])
+dataset_for_prediction.index = dataset_for_prediction['Date']
 
-# date time typecast
-dataset_for_prediction['Date'] =pd.to_datetime(dataset_for_prediction['Date'])
-dataset_for_prediction.index= dataset_for_prediction['Date']
-
-
-
-# normalizing the exogeneous variables
-from sklearn.preprocessing import MinMaxScaler
-sc_in = MinMaxScaler(feature_range=(0, 1))
-scaled_input = sc_in.fit_transform(dataset_for_prediction[['Low', 'High', 'Open', 'Close', 'Volume', 'Mean']])
+# Scale input features (exogenous variables)
+sc_in = MinMaxScaler(feature_range=(0,1))
+scaled_input = sc_in.fit_transform(dataset_for_prediction[['low', 'high', 'open', 'close', 'volume', 'mean']])
 scaled_input = pd.DataFrame(scaled_input, index=dataset_for_prediction.index)
-X=scaled_input
+X = scaled_input
 X.rename(columns={0:'Low', 1:'High', 2:'Open', 3:'Close', 4:'Volume', 5:'Mean'}, inplace=True)
-print("Normalized X")
-print(X.head())
 
+# Scale output
+sc_out = MinMaxScaler(feature_range=(0,1))
+scaled_output = sc_out.fit_transform(dataset_for_prediction[['Actual']])
+scaled_output = pd.DataFrame(scaled_output, index=dataset_for_prediction.index)
+y = scaled_output
+y.rename(columns={0:'BTC Price next day'}, inplace=True)
 
-# normalizing the time series
-sc_out = MinMaxScaler(feature_range=(0, 1))
-scaler_output = sc_out.fit_transform(dataset_for_prediction[['Actual']])
-scaler_output =pd.DataFrame(scaler_output, index=dataset_for_prediction.index)
-y=scaler_output
-y.rename(columns={0:'BTC Price next day'}, inplace= True)
-y.index=dataset_for_prediction.index
-print("Normalized y")
-print(y.head())
-
-
-# train-test split (cannot shuffle in case of time series)
-train_size=int(len(df) *0.9)
-test_size = int(len(df)) - train_size
+# Train/test split
 train_X, train_y = X[:train_size].dropna(), y[:train_size].dropna()
 test_X, test_y = X[train_size:].dropna(), y[train_size:].dropna()
 
+print(f"Train data shape: {train_X.shape}, Test data shape: {test_X.shape}")
 
-
-# Init the best SARIMAX model
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-model = SARIMAX(
-    train_y,
-    exog=train_X,
-    order=(0,1,1),
-    seasonal_order =(0, 0, 1, 12),
-    enforce_invertibility=False,
-    enforce_stationarity=False
-)
-
-# training the model
-results = model.fit()
-
-# get predictions
-predictions = results.predict(start =train_size, end=train_size+test_size-2,exog=test_X)
-
-
-# setting up for plots
-act = pd.DataFrame(scaler_output.iloc[train_size:, 0])
-predictions=pd.DataFrame(predictions)
-predictions.reset_index(drop=True, inplace=True)
-predictions.index=test_X.index
-predictions['Actual'] = act['BTC Price next day']
-predictions.rename(columns={0:'Pred', 'predicted_mean':'Pred'}, inplace=True)
-
-
-# post-processing inverting normalization
-testPredict = sc_out.inverse_transform(predictions[['Pred']])
-testActual = sc_out.inverse_transform(predictions[['Actual']])
-
-# prediction plots
-plt.figure(figsize=(20,10))
-plt.plot(predictions.index, testActual, label='Pred', color='blue')
-plt.plot(predictions.index, testPredict, label='Actual', color='red')
-plt.legend()
-plt.show()
-
-# print RMSE
-from statsmodels.tools.eval_measures import rmse
-print("RMSE:",rmse(testActual, testPredict))
+# SARIMAX Model
+print("Training SARIMAX model...")
+try:
+    model = SARIMAX(train_y, 
+                    exog=train_X,
+                    order=(1, 1, 1),           # ARIMA part
+                    seasonal_order=(1, 1, 1, 12),  # Seasonal part
+                    enforce_invertibility=False,
+                    enforce_stationarity=False)
+    
+    results = model.fit(disp=False)
+    
+    print("Generating predictions...")
+    predictions = results.predict(start=len(train_X), 
+                                 end=len(train_X) + len(test_X) - 1, 
+                                 exog=test_X)
+    
+    predictions = pd.DataFrame(predictions.values, columns=['Pred'], index=test_X.index)
+    
+    # Add actual values
+    act = pd.DataFrame(scaled_output.iloc[len(train_X):, 0])
+    predictions['Actual'] = act['BTC Price next day']
+    
+    print(f"Predictions shape: {predictions.shape}")
+    
+    # Transform back to original scale
+    predicted_prices = sc_out.inverse_transform(predictions[['Pred']])
+    actual_prices = sc_out.inverse_transform(predictions[['Actual']])
+    
+    # Plot results
+    plt.figure(figsize=(20,10))
+    plt.plot(predictions.index, predicted_prices, label='Predicted', color='blue')
+    plt.plot(predictions.index, actual_prices, label='Actual', color='red')
+    plt.legend()
+    plt.title('SARIMAX Bitcoin Price Prediction')
+    plt.show()
+    
+    # Calculate RMSE
+    from statsmodels.tools.eval_measures import rmse
+    error = rmse(predicted_prices, actual_prices)
+    print("RMSE:", error)
+    print("SARIMAX model completed successfully!")
+    
+except Exception as e:
+    print(f"Error in SARIMAX: {e}")
+    print("Trying simpler SARIMAX parameters...")
